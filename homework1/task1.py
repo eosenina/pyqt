@@ -21,7 +21,7 @@ def host_ping(ip_list, timeout=500, requests=1):
         proc.wait()
         if proc.returncode == 0:
             results['Доступные узлы'] += f"{address}\n"
-            res_string = f'{address} - Узел доступен'
+            result_str = f'{address} - Узел доступен'
         else:
             results['Недоступные узлы'] += f"{address}\n"
             result_str = f'{address} - Узел недоступен'
