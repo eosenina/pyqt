@@ -10,8 +10,76 @@ from common.settings import ACTION, PRESENCE, DEFAULT_IP_ADDRESS, DEFAULT_PORT, 
     ACCOUNT_NAME, TYPE, STATUS, MESSAGE, MESSAGE_TEXT, SENDER, DESTINATION, EXIT
 from common.messages import get_message, send_message
 from common.decorators import Log
+from common.meta import ClientMaker
 
 logger = logging.getLogger('client')
+
+
+class ClientSender(threading.Thread, metaclass=ClientMaker):
+    def __init__(self, sock, user_name='Guest'):
+        self.user_name = user_name
+        self.sock = sock
+        super().__init__()
+
+    def run(self):
+        while True:
+            command = input('Введите команду: msg - отправить сообщение, q - выход: ')
+            if command == 'msg':
+                self.create_message()
+            elif command == 'q':
+                send_message(self.sock, self.create_exit_message())
+                print('Завершение соединения.')
+                logger.info('Завершение работы по команде пользователя.')
+                time.sleep(0.5)
+                break
+            else:
+                print('Команда не распознана, попробойте снова.')
+
+    def create_message(self):
+        recipient = input('Введите получателя сообщения: ')
+        message_text = input('Введите текст сообщения: ')
+        message_dict = {
+            ACTION: MESSAGE,
+            SENDER: self.user_name,
+            DESTINATION: recipient,
+            TIME: time.time(),
+            MESSAGE_TEXT: message_text
+        }
+        logger.debug(f'Сформировано сообщение: {message_dict}')
+        try:
+            send_message(self.sock, message_dict)
+            logger.info(f'Отправлено сообщение для пользователя {recipient}')
+        except OSError:
+            logger.critical('Потеряно соединение с сервером.')
+            sys.exit(1)
+
+    def create_exit_message(self):
+        return {
+            ACTION: EXIT,
+            TIME: time.time(),
+            ACCOUNT_NAME: self.user_name
+        }
+
+
+class ClientReceiver(threading.Thread, metaclass=ClientMaker):
+    def __init__(self, sock, user_name):
+        self.user_name = user_name
+        self.sock = sock
+        super().__init__()
+
+    def run(self):
+        while True:
+            try:
+                message = get_message(self.sock)
+                if ACTION in message and message[ACTION] == MESSAGE and SENDER in message and DESTINATION in message \
+                        and MESSAGE_TEXT in message and message[DESTINATION] == self.user_name:
+                    print(f'\nПолучено сообщение от пользователя {message[SENDER]}:\n{message[MESSAGE_TEXT]}')
+                    logger.info(f'Получено сообщение от пользователя {message[SENDER]}:\n{message[MESSAGE_TEXT]}')
+                else:
+                    logger.error(f'Получено некорректное сообщение с сервера: {message}')
+            except (OSError, ConnectionError, ConnectionAbortedError, ConnectionResetError, json.JSONDecodeError):
+                logger.critical(f'Потеряно соединение с сервером.')
+                break
 
 
 @Log()
@@ -30,73 +98,12 @@ def create_presence_message(user_name='Guest', user_status='I\'m here'):
 
 
 @Log()
-def create_exit_message(user_name):
-    return {
-        ACTION: EXIT,
-        TIME: time.time(),
-        ACCOUNT_NAME: user_name
-    }
-
-
-@Log()
 def process_answer(message):
     if RESPONSE in message:
         if message[RESPONSE] == 200:
             return '200 : OK'
         return f'400 : {message[ERROR]}'
     raise ValueError
-
-
-@Log()
-def create_message(sock, account_name='Guest'):
-    recipient = input('Введите получателя сообщения: ')
-    message_text = input('Введите текст сообщения: ')
-    message_dict = {
-        ACTION: MESSAGE,
-        SENDER: account_name,
-        DESTINATION: recipient,
-        TIME: time.time(),
-        MESSAGE_TEXT: message_text
-    }
-    logger.debug(f'Сформировано сообщение: {message_dict}')
-    try:
-        send_message(sock, message_dict)
-        logger.info(f'Отправлено сообщение для пользователя {recipient}')
-    except OSError:
-        logger.critical('Потеряно соединение с сервером.')
-        sys.exit(1)
-
-
-@Log()
-def message_from_server(sock, my_name):
-    while True:
-        try:
-            message = get_message(sock)
-            if ACTION in message and message[ACTION] == MESSAGE and SENDER in message and DESTINATION in message \
-                    and MESSAGE_TEXT in message and message[DESTINATION] == my_name:
-                print(f'\nПолучено сообщение от пользователя {message[SENDER]}:\n{message[MESSAGE_TEXT]}')
-                logger.info(f'Получено сообщение от пользователя {message[SENDER]}:\n{message[MESSAGE_TEXT]}')
-            else:
-                logger.error(f'Получено некорректное сообщение с сервера: {message}')
-        except (OSError, ConnectionError, ConnectionAbortedError, ConnectionResetError, json.JSONDecodeError):
-            logger.critical(f'Потеряно соединение с сервером.')
-            break
-
-
-@Log()
-def user_interactive(sock, user_name):
-    while True:
-        command = input('Введите команду: msg - отправить сообщение, q - выход: ')
-        if command == 'msg':
-            create_message(sock, user_name)
-        elif command == 'q':
-            send_message(sock, create_exit_message(user_name))
-            print('Завершение соединения.')
-            logger.info('Завершение работы по команде пользователя.')
-            time.sleep(0.5)
-            break
-        else:
-            print('Команда не распознана, попробойте снова.')
 
 
 @Log()
@@ -152,11 +159,11 @@ def main():
         logger.critical(f'Не удалось подключиться к серверу {server_address}:{server_port}')
         sys.exit(1)
     else:
-        receiver = threading.Thread(target=message_from_server, args=(sock, client_name))
+        receiver = ClientReceiver(sock, client_name)
         receiver.daemon = True
         receiver.start()
 
-        user_interface = threading.Thread(target=user_interactive, args=(sock, client_name))
+        user_interface = ClientSender(sock, client_name)
         user_interface.daemon = True
         user_interface.start()
         logger.debug('Запущены процессы')
