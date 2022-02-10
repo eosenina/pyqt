@@ -51,7 +51,8 @@ class ServerStorage:
             self.port = port
 
     def __init__(self):
-        self.database_engine = create_engine('sqlite:///server_base.db3', echo=False, pool_recycle=7200)
+        self.database_engine = create_engine('sqlite:///server_base.db3', echo=False, pool_recycle=7200,
+                                             connect_args={'check_same_thread': False})
         self.Base.metadata.create_all(self.database_engine)
         Session = sessionmaker(bind=self.database_engine)
         self.session = Session()
