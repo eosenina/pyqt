@@ -2,6 +2,7 @@ import select
 import socket
 import sys
 import logging
+import threading
 import time
 
 from common.settings import MAX_CONNECTIONS, DEFAULT_PORT, ACTION, RESPONSE, ERROR, PRESENCE, TIME, USER, MESSAGE, \
@@ -10,6 +11,7 @@ from common.messages import get_message, send_message
 from common.decorators import log
 from common.descr import Port
 from common.meta import ServerMaker
+from server_db import ServerStorage
 
 logger = logging.getLogger('server')
 
@@ -41,21 +43,25 @@ def parse_arguments():
     return address, port
 
 
-class Server(metaclass=ServerMaker):
+class Server(threading.Thread, metaclass=ServerMaker):
     port = Port()
 
-    def __init__(self, address, port):
+    def __init__(self, address, port, database):
         self.address = address
         self.port = port
         self.clients_list = []
         self.messages_list = []
         self.user_names_dict = dict()
+        self.database = database
+        super().__init__()
 
     def process_incoming_message(self, message, messages_list, client, clients_list, user_names_dict):
         logger.debug(f'Разбор сообщения от клиента : {message}')
         if ACTION in message and message[ACTION] == PRESENCE and TIME in message and USER in message:
             if message[USER][ACCOUNT_NAME] not in user_names_dict.keys():
                 user_names_dict[message[USER][ACCOUNT_NAME]] = client
+                ip, port = client.getpeername()
+                self.database.user_login(message[USER][ACCOUNT_NAME], ip, port)
                 send_message(client, {RESPONSE: 200})
             else:
                 response = {RESPONSE: 400, ERROR: 'Имя пользователя уже занято.'}
@@ -68,6 +74,7 @@ class Server(metaclass=ServerMaker):
             messages_list.append(message)
             return
         elif ACTION in message and message[ACTION] == EXIT and ACCOUNT_NAME in message:
+            self.database.user_logout(message[ACCOUNT_NAME])
             clients_list.remove(user_names_dict[message[ACCOUNT_NAME]])
             user_names_dict[message[ACCOUNT_NAME]].close()
             del user_names_dict[message[ACCOUNT_NAME]]
@@ -85,7 +92,7 @@ class Server(metaclass=ServerMaker):
         else:
             logger.error(f'Пользователь {message[DESTINATION]} не зарегистрирован, отправка сообщения невозможна.')
 
-    def main_loop(self):
+    def run(self):
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.bind((self.address, self.port))
         server_socket.settimeout(1)
@@ -128,9 +135,41 @@ class Server(metaclass=ServerMaker):
             self.messages_list.clear()
 
 
+def print_help():
+    print('Поддерживаемые комманды:')
+    print('users - список пользователей')
+    print('connected - список подключенных пользователей')
+    print('history - история входов пользователя')
+    print('exit - завершение работы сервера')
+    print('help - вывод справки')
+
+
 if __name__ == '__main__':
     addr, port = parse_arguments()
-    serv = Server(address=addr, port=port)
-    serv.main_loop()
+    database = ServerStorage()
+
+    server = Server(addr, port, database)
+    server.daemon = True
+    server.start()
+
+    print_help()
+    while True:
+        command = input('Введите комманду: ')
+        if command == 'help':
+            print_help()
+        elif command == 'exit':
+            break
+        elif command == 'users':
+            for user in sorted(database.users_list()):
+                print(f'Пользователь {user[0]}, последний вход: {user[1]}')
+        elif command == 'connected':
+            for user in sorted(database.active_users_list()):
+                print(f'Пользователь {user[0]}, подключен: {user[1]}:{user[2]}, время установки соединения: {user[3]}')
+        elif command == 'history':
+            name = input('Введите имя пользователя. Для вывода всей истории - нажмите Enter: ')
+            for user in sorted(database.login_history(name)):
+                print(f'Пользователь: {user[0]} время входа: {user[1]}. Вход с: {user[2]}:{user[3]}')
+        else:
+            print('Команда не распознана.')
 
 
