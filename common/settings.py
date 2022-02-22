@@ -21,5 +21,10 @@ MESSAGE_TEXT = 'message_text'
 SENDER = 'sender'
 DESTINATION = 'destination'
 EXIT = 'exit'
+GET_CONTACTS = 'get_contacts'
+ADD_CONTACT = 'add_contact'
+DEL_CONTACT = 'del_contact'
+LIST_INFO = 'list_info'
+REGISTERED_USERS = 'registered_users'
 
 LOGGING_LEVEL = logging.DEBUG

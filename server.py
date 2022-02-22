@@ -6,7 +6,8 @@ import threading
 import time
 
 from common.settings import MAX_CONNECTIONS, DEFAULT_PORT, ACTION, RESPONSE, ERROR, PRESENCE, TIME, USER, MESSAGE, \
-    MESSAGE_TEXT, SENDER, ACCOUNT_NAME, DESTINATION, EXIT
+    MESSAGE_TEXT, SENDER, ACCOUNT_NAME, DESTINATION, EXIT, GET_CONTACTS, LIST_INFO, ADD_CONTACT, DEL_CONTACT, \
+    REGISTERED_USERS
 from common.messages import get_message, send_message
 from common.decorators import log
 from common.descr import Port
@@ -14,6 +15,9 @@ from common.meta import ServerMaker
 from server_db import ServerStorage
 
 logger = logging.getLogger('server')
+
+new_connection = False
+connection_lock = threading.Lock()
 
 
 def parse_arguments():
@@ -56,29 +60,65 @@ class Server(threading.Thread, metaclass=ServerMaker):
         super().__init__()
 
     def process_incoming_message(self, message, messages_list, client, clients_list, user_names_dict):
+        global new_connection
         logger.debug(f'Разбор сообщения от клиента : {message}')
+        # Presence message
         if ACTION in message and message[ACTION] == PRESENCE and TIME in message and USER in message:
             if message[USER][ACCOUNT_NAME] not in user_names_dict.keys():
                 user_names_dict[message[USER][ACCOUNT_NAME]] = client
                 ip, port = client.getpeername()
                 self.database.user_login(message[USER][ACCOUNT_NAME], ip, port)
                 send_message(client, {RESPONSE: 200})
+                with connection_lock:
+                    new_connection = True
             else:
                 response = {RESPONSE: 400, ERROR: 'Имя пользователя уже занято.'}
                 send_message(client, response)
                 clients_list.remove(client)
                 client.close()
             return
+
+        # Send message
         elif ACTION in message and message[ACTION] == MESSAGE and DESTINATION in message and TIME in message \
                 and SENDER in message and MESSAGE_TEXT in message:
             messages_list.append(message)
             return
+
+        # Exit message
         elif ACTION in message and message[ACTION] == EXIT and ACCOUNT_NAME in message:
             self.database.user_logout(message[ACCOUNT_NAME])
             clients_list.remove(user_names_dict[message[ACCOUNT_NAME]])
             user_names_dict[message[ACCOUNT_NAME]].close()
             del user_names_dict[message[ACCOUNT_NAME]]
+            with connection_lock:
+                new_connection = True
             return
+
+        # Get contacts message
+        elif ACTION in message and message[ACTION] == GET_CONTACTS and USER in message and \
+                self.user_names_dict[message[USER][ACCOUNT_NAME]] == client:
+            response = {RESPONSE: 202, LIST_INFO: self.database.get_contacts(message[USER])}
+            send_message(client, response)
+
+        # Add contacts message
+        elif ACTION in message and message[ACTION] == ADD_CONTACT and ACCOUNT_NAME in message and USER in message \
+                and self.user_names_dict[message[USER]] == client:
+            self.database.add_contact(message[USER], message[ACCOUNT_NAME])
+            send_message(client, {RESPONSE: 200})
+
+        # Delete contact
+        elif ACTION in message and message[ACTION] == DEL_CONTACT and ACCOUNT_NAME in message and USER in message \
+                and self.user_names_dict[message[USER]] == client:
+            self.database.remove_contact(message[USER], message[ACCOUNT_NAME])
+            send_message(client, {RESPONSE: 200})
+
+        # Get registered users
+        elif ACTION in message and message[ACTION] == REGISTERED_USERS and ACCOUNT_NAME in message \
+                and self.user_names_dict[message[ACCOUNT_NAME]] == client:
+            response = {RESPONSE: 200, LIST_INFO: [usr[0] for usr in self.database.users_list()]}
+            send_message(client, response)
+
+        # Bad request
         else:
             send_message(client, {RESPONSE: 400, ERROR: 'Запрос некорректен.'})
             return
@@ -124,6 +164,12 @@ class Server(threading.Thread, metaclass=ServerMaker):
                     except OSError:
                         logger.info(f'Клиент {client_to_read.getpeername()} отключился от сервера.')
                         self.clients_list.remove(client_to_read)
+                        for username in self.user_names_dict.keys():  # !!!!!!!!!!
+                            if self.user_names_dict[username] == client_to_read:
+                                self.database.user_logout(username)
+                                del self.user_names_dict[username]
+                                break
+                        self.clients.remove(client_to_read)
 
             for msg in self.messages_list:
                 try:
@@ -131,6 +177,7 @@ class Server(threading.Thread, metaclass=ServerMaker):
                 except Exception:
                     logger.info(f'Связь с клиентом с именем {msg[DESTINATION]} была потеряна')
                     self.clients_list.remove(self.user_names_dict[msg[DESTINATION]])
+                    self.database.user_logout(msg[DESTINATION])
                     del self.user_names_dict[msg[DESTINATION]]
             self.messages_list.clear()
 
